@@ -249,17 +249,11 @@ func runShell() {
 
 	if iconTheme, err := exec.Command("gsettings", "get", "org.gnome.desktop.interface", "icon-theme").Output(); err == nil {
 		os.Setenv("QS_ICON_THEME", strings.Trim(strings.TrimSpace(string(iconTheme)), "'"))
-	}
-	os.Setenv("QT_QPA_PLATFORMTHEME", "qt6ct")
-	// Prefer Qt's FFmpeg backend when the packaged/runtime FFmpeg dependency
-	// is available. Keep the environment override intact, and leave Qt's
-	// default backend alone when FFmpeg is not installed.
-	if os.Getenv("QT_MEDIA_BACKEND") == "" {
-		if _, err := exec.LookPath("ffmpeg"); err == nil {
-			os.Setenv("QT_MEDIA_BACKEND", "ffmpeg")
 		}
-	}
-	os.Unsetenv("HL_INITIAL_WORKSPACE_TOKEN")
+		os.Setenv("QT_QPA_PLATFORMTHEME", "qt6ct")
+		// Live QtMultimedia playback uses GStreamer by default. FFmpeg remains
+		// a dependency for offline thumbnail, preview, and lockscreen extraction.
+		os.Unsetenv("HL_INITIAL_WORKSPACE_TOKEN")
 	if tmpdir := defaultTMUXTmpDir(os.Getenv("TMUX_TMPDIR"), os.Getenv("XDG_RUNTIME_DIR")); tmpdir != "" {
 		os.Setenv("TMUX_TMPDIR", tmpdir)
 	}
