@@ -114,20 +114,14 @@ func Region(outputName string, x, y, w, h int, cursor bool) (*screenshot.Capture
 		return nil, nil, fmt.Errorf("output %q not found", name)
 	}
 
-	scale := mon.EffectiveScale()
-	if frozenW, frozenH, found := FrozenDims(name); found && mon.Width > 0 && mon.Height > 0 {
-		// axctl versions differ on whether width/height are logical or
-		// physical. The retained frame is authoritative for the crop scale.
-		frameScaleX := float64(frozenW) / float64(mon.Width)
-		frameScaleY := float64(frozenH) / float64(mon.Height)
-		if frameScaleX > 0 && frameScaleY > 0 {
-			scale = (frameScaleX + frameScaleY) / 2
-		}
+	scaleX, scaleY := mon.EffectiveScale(), mon.EffectiveScale()
+	if frozenW, frozenH, found := FrozenDims(name); found {
+		scaleX, scaleY = cropScales(mon, frozenW, frozenH)
 	}
-	localX := int(float64(int(rect.X)-mon.X())*scale + 0.5)
-	localY := int(float64(int(rect.Y)-mon.Y())*scale + 0.5)
-	cw := int(float64(rect.Width)*scale + 0.5)
-	ch := int(float64(rect.Height)*scale + 0.5)
+	localX := int(float64(int(rect.X)-mon.X())*scaleX + 0.5)
+	localY := int(float64(int(rect.Y)-mon.Y())*scaleY + 0.5)
+	cw := int(float64(rect.Width)*scaleX + 0.5)
+	ch := int(float64(rect.Height)*scaleY + 0.5)
 
 	if cropped, closer, found, ferr := FrozenCrop(name, int32(localX), int32(localY), int32(cw), int32(ch)); found {
 		if ferr == nil {
@@ -155,6 +149,36 @@ func Region(outputName string, x, y, w, h int, cursor bool) (*screenshot.Capture
 		closer()
 	}
 	return cropped, combinedCloser, nil
+}
+
+// cropScales derives the logical-to-physical scales used for a frozen frame.
+// axctl reports monitor dimensions in the monitor's logical orientation, while
+// the screencopy frame is upright by the time it reaches this package. For a
+// 90/270-degree output, the frame's width corresponds to the monitor's height
+// and vice versa. Using the unrotated pairs produces inconsistent axis scales
+// and can make a selected region miss a substantial part of the image.
+func cropScales(mon *axmon.Monitor, frameW, frameH int32) (float64, float64) {
+	if mon == nil || frameW <= 0 || frameH <= 0 || mon.Width <= 0 || mon.Height <= 0 {
+		if mon == nil {
+			return 1, 1
+		}
+		scale := mon.EffectiveScale()
+		return scale, scale
+	}
+
+	monitorW := float64(mon.Width)
+	monitorH := float64(mon.Height)
+	if transform := mon.Transform(); transform == 1 || transform == 3 {
+		monitorW, monitorH = monitorH, monitorW
+	}
+
+	frameScaleX := float64(frameW) / monitorW
+	frameScaleY := float64(frameH) / monitorH
+	if frameScaleX <= 0 || frameScaleY <= 0 {
+		scale := mon.EffectiveScale()
+		return scale, scale
+	}
+	return frameScaleX, frameScaleY
 }
 
 func cursorMode(on bool) screenshot.CursorMode {
