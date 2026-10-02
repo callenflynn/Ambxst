@@ -13,6 +13,7 @@ Item {
     property var _monitorId: 0
     property bool _initialized: false
     property bool _getInFlight: false
+    property bool _recreateAfterDestroy: false
 
     property var _createProcess: Process {
         id: _createProcess
@@ -85,6 +86,10 @@ Item {
         onExited: (code) => {
             _monitorId = 0;
             _initialized = false;
+            if (_recreateAfterDestroy) {
+                _recreateAfterDestroy = false;
+                _initMonitor();
+            }
         }
     }
 
@@ -113,6 +118,17 @@ Item {
             _destroyProcess.command = ["sh", "-c", cmd];
             _destroyProcess.running = true;
         }
+    }
+
+    // Re-arm the compositor idle notification after ignoring a tiny pointer
+    // nudge. This lets a later keyboard event or larger pointer movement
+    // produce a fresh active transition without restoring brightness early.
+    function resetActivity() {
+        if (!_initialized || _destroyProcess.running)
+            return;
+        _recreateAfterDestroy = true;
+        _stopPolling();
+        _destroyMonitor();
     }
 
     function _startPolling() {

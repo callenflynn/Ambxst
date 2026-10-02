@@ -3,6 +3,7 @@ pragma Singleton
 import QtQuick
 import QtQml
 import Quickshell
+import Quickshell.Io
 import qs.config
 
 Singleton {
@@ -48,6 +49,55 @@ Singleton {
     // Master Idle Logic
     property int elapsedIdleTime: 0
     property var triggeredListeners: [] // Keeps track of indices that have fired
+    property int pointerWakeThreshold: 24
+    property real dimCursorX: -1
+    property real dimCursorY: -1
+    property string cursorQueryPurpose: ""
+    property var pendingBrightnessResumes: []
+
+    property var cursorPositionProcess: Process {
+        id: cursorPositionProcess
+        command: ["axctl", "system", "get-cursor-position"]
+        running: false
+        stdout: StdioCollector { id: cursorPositionStdout }
+        stderr: StdioCollector { id: cursorPositionStderr }
+        onExited: (code) => {
+            if (code !== 0 || !cursorPositionStdout.text) {
+                console.warn("Unable to query cursor position; allowing idle brightness resume");
+                if (root.cursorQueryPurpose === "wake")
+                    root.finishBrightnessResume();
+                return;
+            }
+
+            const parts = cursorPositionStdout.text.trim().split(",");
+            const x = Number(parts[0]);
+            const y = Number(parts[1]);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) {
+                if (root.cursorQueryPurpose === "wake")
+                    root.finishBrightnessResume();
+                return;
+            }
+
+            if (root.cursorQueryPurpose === "dim") {
+                root.dimCursorX = x;
+                root.dimCursorY = y;
+            } else if (root.cursorQueryPurpose === "wake") {
+                const dx = x - root.dimCursorX;
+                const dy = y - root.dimCursorY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                // No pointer movement means the activity was most likely a
+                // keyboard event, so keep keyboard wake-up immediate.
+                if (distance === 0 || distance >= root.pointerWakeThreshold) {
+                    root.finishBrightnessResume();
+                } else {
+                    console.log("Ignoring pointer wake of " + Math.round(distance) +
+                        "px; waiting for " + root.pointerWakeThreshold + "px");
+                    root.masterMonitor.resetActivity();
+                }
+            }
+            root.cursorQueryPurpose = "";
+        }
+    }
 
     // Master Monitor: Detects "absence of activity" almost immediately
     property var masterMonitor: IdleMonitor {
@@ -103,6 +153,34 @@ Singleton {
         }
     }
 
+    function isBrightnessDimListener(listener) {
+        return listener && listener.onTimeout &&
+            listener.onTimeout.indexOf("brightness") !== -1;
+    }
+
+    function queryCursorPosition(purpose) {
+        if (cursorPositionProcess.running)
+            return;
+        root.cursorQueryPurpose = purpose;
+        cursorPositionProcess.running = true;
+    }
+
+    function finishBrightnessResume() {
+        let listeners = Config.system.idle.listeners;
+        for (let i = root.pendingBrightnessResumes.length - 1; i >= 0; i--) {
+            let idx = root.pendingBrightnessResumes[i];
+            let listener = listeners[idx];
+            if (listener && listener.onResume) {
+                console.log("Idle resuming (undoing " + (listener.timeout || 0) + "s): " + listener.onResume);
+                root.executeCommand(listener.onResume);
+            }
+        }
+        root.pendingBrightnessResumes = [];
+        root.elapsedIdleTime = 0;
+        root.triggeredListeners = [];
+        root.cursorQueryPurpose = "";
+    }
+
     function shouldUseInternalSleepLock() {
         const cmd = (root.beforeSleepCmd || "").trim();
         return cmd === "loginctl lock-session"
@@ -126,6 +204,8 @@ Singleton {
             if (root.elapsedIdleTime >= tVal && !root.triggeredListeners.includes(i)) {
                 if (listener.onTimeout) {
                     console.log("Idle timer " + tVal + "s reached: " + listener.onTimeout);
+                    if (root.isBrightnessDimListener(listener))
+                        root.queryCursorPosition("dim");
                     root.executeCommand(listener.onTimeout);
                 }
                 root.triggeredListeners.push(i);
@@ -136,20 +216,35 @@ Singleton {
     function resetIdleState() {
         let listeners = Config.system.idle.listeners;
 
+        if (root.pendingBrightnessResumes.length > 0) {
+            root.queryCursorPosition("wake");
+            return;
+        }
+
+        let brightnessPending = [];
+
         // Execute resume commands for all triggered listeners
         // We iterate backwards to undo latest states first (optional preference)
         for (let i = root.triggeredListeners.length - 1; i >= 0; i--) {
             let idx = root.triggeredListeners[i];
             let listener = listeners[idx];
 
-            if (listener && listener.onResume) {
+            if (listener && listener.onResume && root.isBrightnessDimListener(listener)) {
+                brightnessPending.push(idx);
+            } else if (listener && listener.onResume) {
                 console.log("Idle resuming (undoing " + (listener.timeout || 0) + "s): " + listener.onResume);
                 root.executeCommand(listener.onResume);
             }
         }
 
-        // Reset counters
-        root.elapsedIdleTime = 0;
-        root.triggeredListeners = [];
+        if (brightnessPending.length > 0) {
+            root.pendingBrightnessResumes = brightnessPending;
+            if (root.dimCursorX >= 0) {
+                root.queryCursorPosition("wake");
+                return;
+            }
+        }
+
+        root.finishBrightnessResume();
     }
 }
