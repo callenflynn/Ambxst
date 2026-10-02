@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // runBrightness drives Quickshell IPC directly for set/adjust/pull so the
@@ -139,6 +140,7 @@ func runBrightnessRestore(monitor string) {
 	qsPid := readQsPidOrExit()
 	if monitor != "" {
 		axctlRun("brightness", "restore", monitor)
+		time.Sleep(250 * time.Millisecond)
 		notifyQsBrightness(qsPid, "pull", "", monitor)
 		fmt.Printf("Restored brightness for %s\n", monitor)
 		return
@@ -152,11 +154,7 @@ func runBrightnessRestore(monitor string) {
 	} else {
 		failed := false
 		for _, name := range monitors {
-			cmd := exec.Command("axctl", "brightness", "restore", name)
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
+			if err := restoreBrightnessMonitor(name); err != nil {
 				failed = true
 				fmt.Fprintf(os.Stderr, "Warning: failed to restore brightness for %s: %v\n", name, err)
 			}
@@ -165,8 +163,31 @@ func runBrightnessRestore(monitor string) {
 			fmt.Fprintln(os.Stderr, "Warning: one or more monitors could not be restored")
 		}
 	}
+	// DDC displays can acknowledge the restore process before the new VCP
+	// value is readable. Do not immediately pull the old dimmed value back
+	// into QML, otherwise the shell appears stuck at the dim level.
+	time.Sleep(250 * time.Millisecond)
 	notifyQsBrightness(qsPid, "pull", "", monitor)
 	fmt.Println("Restored brightness for all present monitors")
+}
+
+func restoreBrightnessMonitor(name string) error {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		cmd := exec.Command("axctl", "brightness", "restore", name)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == 0 {
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	return lastErr
 }
 
 func currentBrightnessMonitors() ([]string, error) {

@@ -77,17 +77,25 @@ Singleton {
 
     function executeCommand(cmd) {
         if (!cmd) return;
-        
+
         // Escape backslashes and quotes for the QML string
         let escapedCmd = cmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-        
+
         try {
             let proc = Qt.createQmlObject(`
                 import Quickshell.Io
                 Process {
+                    stdout: StdioCollector { id: commandStdout }
+                    stderr: StdioCollector { id: commandStderr }
                     command: ["sh", "-c", "${escapedCmd}"]
                     running: true
-                    onExited: destroy()
+                    onExited: (code, status) => {
+                        if (code !== 0) {
+                            console.error("Idle command failed (" + code + "): " + "${escapedCmd}" +
+                                (commandStderr.text ? "\\n" + commandStderr.text.trim() : ""));
+                        }
+                        destroy();
+                    }
                 }
             `, root, "dynamicProc");
         } catch (e) {
